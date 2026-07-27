@@ -712,7 +712,6 @@ function CharacterPickSection({
           name="character"
           defaultValue=""
           placeholder="Select character"
-          bare
         />
         <Button type="submit" size="sm" variant="outline">
           Lock in

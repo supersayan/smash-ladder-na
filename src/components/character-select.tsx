@@ -22,7 +22,6 @@ export function CharacterSelect({
   defaultValue,
   placeholder = "Select character",
   className,
-  bare = false,
   name,
 }: {
   value?: string;
@@ -30,7 +29,6 @@ export function CharacterSelect({
   defaultValue?: string;
   placeholder?: string;
   className?: string;
-  bare?: boolean;
   /** When set, renders a hidden native <select> with this name so the value
    *  flows into the parent <form>'s FormData (useful with server actions).
    *  In this mode the component manages its own state internally. */
