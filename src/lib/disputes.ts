@@ -1,10 +1,16 @@
 import { prisma, TX_OPTIONS, withTransientRetry } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { MatchStatus, ConfirmationMethod } from "@/generated/prisma/enums";
-import { applyEloAndConfirm } from "@/lib/matches";
+import { applyEloAndConfirm, applyCorrection, isMostRecentConfirmedMatch } from "@/lib/matches";
 import { tallySetWins, GAMES_TO_WIN } from "@/lib/match-games";
 import { GAME_ONE_STAGES } from "@/lib/stages";
 import { sendDiscordDM } from "@/lib/discord-bot";
+
+// A CONFIRMED match can still be corrected via adminSetGameWinner below, but
+// only a bounded number of times — this is a mod escape hatch for genuine
+// mistakes (e.g. a character-pick-timeout auto-forfeit overwriting a set a
+// player was actually winning), not a general "replay the whole set" tool.
+export const MAX_ADMIN_GAME_EDITS = 3;
 
 // Same shape as matches.ts's matchWithPlayers, plus report/block counts —
 // kept separate rather than added to that shared constant since this
@@ -183,6 +189,38 @@ export async function requestDisputeResolution(
 // (nothing writes it anymore) but old rows can still carry it.
 const RECENTLY_EXPIRED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+// CONFIRMED matches only stay editable (see adminSetGameWinner/adminCancelMatch
+// above) while they're still each player's most recent CONFIRMED result — so
+// there's no point surfacing one older than that here, it'd just error on
+// edit. A short time window alone isn't a safe bound on a busy ladder (a
+// day's worth of CONFIRMED matches can run into the thousands), so this
+// intersects the window with "still actually editable" via a correlated
+// NOT EXISTS — a newer CONFIRMED match for either player disqualifies it —
+// which keeps the result bounded by active players, not total match volume.
+const RECENTLY_CONFIRMED_WINDOW_MS = 24 * 60 * 60 * 1000;
+const RECENTLY_CONFIRMED_LIMIT = 200;
+
+async function recentlyConfirmedEditableMatchIds() {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT rm.id FROM "RatingMatch" rm
+    WHERE rm.status = 'CONFIRMED'
+      AND rm."confirmedAt" > ${new Date(Date.now() - RECENTLY_CONFIRMED_WINDOW_MS)}
+      AND rm."adminGameEditCount" < ${MAX_ADMIN_GAME_EDITS}
+      AND NOT EXISTS (
+        SELECT 1 FROM "RatingMatch" newer
+        WHERE newer.status = 'CONFIRMED'
+          AND newer."confirmedAt" > rm."confirmedAt"
+          AND (
+            newer."player1Id" IN (rm."player1Id", rm."player2Id")
+            OR newer."player2Id" IN (rm."player1Id", rm."player2Id")
+          )
+      )
+    ORDER BY rm."confirmedAt" DESC
+    LIMIT ${RECENTLY_CONFIRMED_LIMIT}
+  `;
+  return rows.map((r) => r.id);
+}
+
 // Includes recently-EXPIRED matches too (not just still-in-progress ones):
 // if nobody ever clicked through the per-game report flow, the 24h cron
 // just expires the match with no rating impact for either side, leaving
@@ -190,6 +228,8 @@ const RECENTLY_EXPIRED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 // and force-confirm those, not just ones still technically "live". Capped
 // to a recent window so this doesn't accumulate ancient history forever.
 export async function listLiveMatches() {
+  const editableConfirmedIds = await recentlyConfirmedEditableMatchIds();
+
   return prisma.ratingMatch.findMany({
     where: {
       OR: [
@@ -198,6 +238,7 @@ export async function listLiveMatches() {
           status: MatchStatus.EXPIRED,
           expiresAt: { gt: new Date(Date.now() - RECENTLY_EXPIRED_WINDOW_MS) },
         },
+        { id: { in: editableConfirmedIds } },
       ],
     },
     orderBy: { createdAt: "desc" },
@@ -206,6 +247,7 @@ export async function listLiveMatches() {
       status: true,
       roomCode: true,
       createdAt: true,
+      adminGameEditCount: true,
       player1: { select: { id: true, username: true } },
       player2: { select: { id: true, username: true } },
       games: { select: { gameNumber: true, winnerId: true, finalStage: true } },
@@ -227,9 +269,27 @@ export async function adminSetGameWinner(matchId: string, gameNumber: number, wi
     prisma.$transaction(async (tx) => {
       const match = await tx.ratingMatch.findUnique({ where: { id: matchId } });
       if (!match) throw new Error("Match not found");
-      if (match.status === MatchStatus.CONFIRMED || match.status === MatchStatus.CANCELLED) {
+      if (match.status === MatchStatus.CANCELLED) {
         throw new Error("This match is already closed out");
       }
+
+      // Editing a game on an already-CONFIRMED match means Elo already got
+      // applied off the old result — reopening it is only safe while it's
+      // still each player's most recent CONFIRMED match (same guard
+      // requestResultCorrection uses), and capped so this stays a rare
+      // fix rather than a way to keep replaying a set indefinitely.
+      const reopeningConfirmed = match.status === MatchStatus.CONFIRMED;
+      if (reopeningConfirmed) {
+        if (match.adminGameEditCount >= MAX_ADMIN_GAME_EDITS) {
+          throw new Error(`This match has already been edited the maximum of ${MAX_ADMIN_GAME_EDITS} times`);
+        }
+        if (!(await isMostRecentConfirmedMatch(tx, match))) {
+          throw new Error(
+            "Can't edit — a newer match has been confirmed since, or the season has ended",
+          );
+        }
+      }
+
       if (winnerId !== null && winnerId !== match.player1Id && winnerId !== match.player2Id) {
         throw new Error("Winner must be one of the two players");
       }
@@ -252,11 +312,30 @@ export async function adminSetGameWinner(matchId: string, gameNumber: number, wi
         },
       });
 
-      if (winnerId === null) return;
-
       const games = await tx.matchGame.findMany({ where: { matchId: match.id } });
       const wins = tallySetWins(games);
       const setWinnerId = Object.entries(wins).find(([, count]) => count >= GAMES_TO_WIN)?.[0];
+
+      if (reopeningConfirmed) {
+        if (!setWinnerId) {
+          throw new Error(
+            "This edit would leave the match without a clear winner — pick a result that keeps someone at " +
+              `${GAMES_TO_WIN} game wins`,
+          );
+        }
+        await tx.ratingMatch.update({
+          where: { id: matchId },
+          data: { adminGameEditCount: { increment: 1 } },
+        });
+        // Reverses Elo back to this match's own stored before-ratings and
+        // reapplies with the corrected winner — never touches gamesPlayed,
+        // since the match was already counted as played the first time.
+        await applyCorrection(tx, match, setWinnerId);
+        return;
+      }
+
+      if (winnerId === null) return;
+
       if (setWinnerId) {
         await tx.ratingMatch.update({
           where: { id: match.id },
@@ -305,11 +384,44 @@ export async function adminResetMatchToZero(matchId: string) {
 // self-service cancelMatch is deliberately narrower (PENDING_REPORT/
 // REPORTED only) since a player shouldn't be able to back out of a match
 // that's already progressed past that.
+//
+// Cancelling a CONFIRMED match fully undoes it — rating reverts to what it
+// was right before this match (not just the delta, since the safety guard
+// below guarantees nothing newer has touched either player's rating since),
+// gamesPlayed is decremented back out, and its RatingHistory rows are
+// deleted so charts don't show a match that no longer counts. Same
+// most-recent-CONFIRMED-match guard as the game-edit path above, for the
+// same reason: reversing here would corrupt a later match's numbers.
 export async function adminCancelMatch(matchId: string) {
-  const match = await prisma.ratingMatch.findUnique({ where: { id: matchId } });
-  if (!match) throw new Error("Match not found");
-  if (match.status === MatchStatus.CONFIRMED || match.status === MatchStatus.CANCELLED) {
-    throw new Error("This match is already closed out");
-  }
-  await prisma.ratingMatch.update({ where: { id: matchId }, data: { status: MatchStatus.CANCELLED } });
+  return withTransientRetry(() =>
+    prisma.$transaction(async (tx) => {
+      const match = await tx.ratingMatch.findUnique({ where: { id: matchId } });
+      if (!match) throw new Error("Match not found");
+      if (match.status === MatchStatus.CANCELLED) {
+        throw new Error("This match is already closed out");
+      }
+
+      if (match.status === MatchStatus.CONFIRMED) {
+        if (!(await isMostRecentConfirmedMatch(tx, match))) {
+          throw new Error(
+            "Can't cancel — a newer match has been confirmed since, or the season has ended",
+          );
+        }
+        if (match.player1RatingBefore === null || match.player2RatingBefore === null) {
+          throw new Error("This match is missing its pre-match ratings and can't be safely reverted");
+        }
+        await tx.user.update({
+          where: { id: match.player1Id },
+          data: { rating: match.player1RatingBefore, gamesPlayed: { decrement: 1 } },
+        });
+        await tx.user.update({
+          where: { id: match.player2Id },
+          data: { rating: match.player2RatingBefore, gamesPlayed: { decrement: 1 } },
+        });
+        await tx.ratingHistory.deleteMany({ where: { matchId } });
+      }
+
+      await tx.ratingMatch.update({ where: { id: matchId }, data: { status: MatchStatus.CANCELLED } });
+    }, TX_OPTIONS),
+  );
 }

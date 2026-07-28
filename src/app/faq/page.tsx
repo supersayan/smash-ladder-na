@@ -57,6 +57,23 @@ export default function FaqPage() {
           </QA>
         </Category>
 
+        <Category title="Practicing">
+          <QA q="Why can't I pick my main character?">
+            You queued that match with &quot;Practicing&quot; checked — your reported main
+            character is banned for you for that set specifically. Uncheck &quot;Practicing&quot;
+            next time you join the queue if you want your full roster available.
+          </QA>
+          <QA q="Does a practicing match affect my ladder rating?">
+            No. Practicing results go entirely to a separate practice rating — your regular
+            ladder rating and games-played count don&apos;t move, whether you win or lose.
+          </QA>
+          <QA q="I didn't mean to check Practicing — can I turn it off mid-match?">
+            No, it&apos;s locked in for that match once you&apos;re paired. Cancel the match if
+            it&apos;s still early enough (see &quot;Canceling a match&quot; above), or ask your opponent to agree
+            to a mutual cancel from the match screen, then requeue with the box unchecked.
+          </QA>
+        </Category>
+
         <Category title="Character reporting">
           <QA q="My character isn't showing on my profile.">
             It only shows once an opponent reports it after a match — there&apos;s no self-select.

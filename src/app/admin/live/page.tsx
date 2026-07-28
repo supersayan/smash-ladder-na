@@ -1,6 +1,6 @@
 import { Radio } from "lucide-react";
 import { auth } from "@/auth";
-import { listLiveMatches } from "@/lib/disputes";
+import { listLiveMatches, MAX_ADMIN_GAME_EDITS } from "@/lib/disputes";
 import { listMatchCommentsAsMod } from "@/lib/match-comments";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -105,6 +105,10 @@ export default async function LiveMatchesPage() {
                       setPlayer2Action: setGameWinnerAction.bind(null, match.id, g.gameNumber, match.player2.id),
                     }))}
                     resetAction={resetMatchAction.bind(null, match.id)}
+                    showResetButton={match.status !== "CONFIRMED"}
+                    editsRemaining={
+                      match.status === "CONFIRMED" ? MAX_ADMIN_GAME_EDITS - match.adminGameEditCount : undefined
+                    }
                   />
 
                   <div className="mt-3">

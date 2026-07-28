@@ -16,9 +16,16 @@ export function JoinLobbyForm({
 
   return (
     <form action={formAction} className={className}>
-      <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-        <input type="checkbox" name="isPracticing" className="size-3.5" />
-        Practicing this session (bans your main character, uses a separate practice rating)
+      <label className="flex items-start gap-1.5 text-sm text-muted-foreground">
+        <input type="checkbox" name="isPracticing" className="mt-0.5 size-3.5" />
+        <span>
+          Practicing this session
+          <span className="block text-xs">
+            Your reported main character is banned for you this session, and results count toward
+            a separate practice rating — your regular ladder rating and games played don&apos;t
+            move at all.
+          </span>
+        </span>
       </label>
       <Button type="submit" disabled={isPending} className="mt-2">
         {isPending ? (

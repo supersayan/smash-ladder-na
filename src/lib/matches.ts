@@ -1,10 +1,9 @@
 import { prisma, TX_OPTIONS, withTransientRetry } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
-import { MatchStatus, ConfirmationMethod, PairingMethod, UserRole } from "@/generated/prisma/enums";
+import { MatchStatus, ConfirmationMethod, PairingMethod } from "@/generated/prisma/enums";
 import { isWiredClaimUntrustworthy } from "@/lib/account";
 import { getBlockedEitherWayIds } from "@/lib/blocks";
 import { createDirectMatch } from "@/lib/lobby";
-import { sendDiscordDM } from "@/lib/discord-bot";
 
 // Used as `include`, which already returns every scalar column (leftAt,
 // rematchRequestedAt, etc.) by default — no need to list them here, and
@@ -79,6 +78,48 @@ export async function cancelMatch(userId: string, matchId: string) {
   if (updatedUser.wiredConnection && isWiredClaimUntrustworthy(updatedUser.cancelCount, updatedUser.gamesPlayed)) {
     await prisma.user.update({ where: { id: userId }, data: { wiredConnection: false } });
   }
+}
+
+// Once a game's been decided or reported, the one-sided cancelMatch above
+// blocks entirely — right, since a player down in the set could otherwise
+// erase away from a result they don't like. But two players who *both* want
+// to call it off (bad connection, one side needs to step away, etc.)
+// shouldn't be stuck grinding out a set neither wants to finish just because
+// a game already has a result. Same two-sided pattern as requestRematch: the
+// first ask just records itself, the second (from the other player) cancels
+// immediately. No cancelCount hit either way, since this isn't one side
+// backing out unilaterally — both agreed.
+export async function requestMutualCancel(userId: string, matchId: string) {
+  const match = await prisma.ratingMatch.findUnique({ where: { id: matchId } });
+  if (!match) throw new Error("Match not found");
+  if (match.player1Id !== userId && match.player2Id !== userId) {
+    throw new Error("Not a participant in this match");
+  }
+  // Same legacy-status handling as cancelMatch above.
+  if (match.status !== MatchStatus.PENDING_REPORT && match.status !== MatchStatus.REPORTED) {
+    throw new Error("This match can no longer be cancelled");
+  }
+
+  const isPlayer1 = match.player1Id === userId;
+  if (isPlayer1 ? match.player1CancelRequestedAt : match.player2CancelRequestedAt) return;
+
+  await withTransientRetry(() =>
+    prisma.$transaction(async (tx) => {
+      await tx.ratingMatch.update({
+        where: { id: matchId },
+        data: isPlayer1 ? { player1CancelRequestedAt: new Date() } : { player2CancelRequestedAt: new Date() },
+      });
+
+      // Re-read within the transaction so a since-committed opponent request
+      // (the common case — their click happened earlier, not concurrently)
+      // is picked up even though the initial read above predates it.
+      const fresh = await tx.ratingMatch.findUniqueOrThrow({ where: { id: matchId } });
+      const opponentRequestedAt = isPlayer1 ? fresh.player2CancelRequestedAt : fresh.player1CancelRequestedAt;
+      if (!opponentRequestedAt) return;
+
+      await tx.ratingMatch.update({ where: { id: matchId }, data: { status: MatchStatus.CANCELLED } });
+    }, TX_OPTIONS),
+  );
 }
 
 // Once a set is over, either player may still want to keep chatting —
@@ -170,57 +211,6 @@ function expectedScore(ratingSelf: number, ratingOpp: number) {
   return 1 / (1 + 10 ** ((ratingOpp - ratingSelf) / 400));
 }
 
-// How recently an account must have been created (relative to the match
-// starting) — combined with almost no other match history — to read as a
-// disposable alt rather than a real new player. 24h comfortably covers
-// "signed up specifically for this", while not flagging every genuine
-// newcomer who happens to play their first match same-day.
-const SELF_BOOST_NEW_ACCOUNT_WINDOW_MS = 24 * 60 * 60 * 1000;
-const SELF_BOOST_LOW_HISTORY_GAMES = 1;
-
-// Best-effort heuristic for the JerBear-style abuse pattern (a player
-// creates a disposable alt account and matches/plays against themselves for
-// free rating) — same two signals that actually caught that incident: the
-// two accounts sharing a last-known IP, or one side being a barely-used
-// account created right before this match. Never blocks anything, only
-// alerts — same-IP roommates/LAN setups are a real false positive here, so
-// this is a lead for a mod to check, not an automatic verdict.
-//
-// Deliberately NOT awaited by its caller (see below applyEloAndConfirm) and
-// uses the module-level prisma client rather than the surrounding tx: this
-// runs its own queries and Discord sends after the interactive transaction
-// that confirmed the match may have already committed. Awaiting Discord's
-// API from inside that transaction once blew its 5s timeout in production
-// (P2028) and rolled back an otherwise-fine confirmation — never again.
-async function flagPossibleSelfBoost(
-  match: { id: string; createdAt: Date },
-  p1: { id: string; username: string; lastKnownIp: string | null; gamesPlayed: number; createdAt: Date },
-  p2: { id: string; username: string; lastKnownIp: string | null; gamesPlayed: number; createdAt: Date },
-) {
-  const reasons: string[] = [];
-  if (p1.lastKnownIp && p1.lastKnownIp === p2.lastKnownIp) {
-    reasons.push("both accounts share the same last-known IP");
-  }
-  for (const [fresh] of [[p1], [p2]] as const) {
-    const accountAgeMs = match.createdAt.getTime() - fresh.createdAt.getTime();
-    if (
-      accountAgeMs >= 0 &&
-      accountAgeMs < SELF_BOOST_NEW_ACCOUNT_WINDOW_MS &&
-      fresh.gamesPlayed <= SELF_BOOST_LOW_HISTORY_GAMES
-    ) {
-      reasons.push(`${fresh.username}'s account was created shortly before this match and has almost no other match history`);
-    }
-  }
-  if (reasons.length === 0) return;
-
-  const mods = await prisma.user.findMany({
-    where: { role: { in: [UserRole.MOD, UserRole.ADMIN] } },
-    select: { discordId: true },
-  });
-  const message = `🕵️ Possible self-boost: ${p1.username} vs ${p2.username} (match ${match.id}) — ${reasons.join("; ")}. Review at /admin/live or the players' profiles.`;
-  await Promise.all(mods.map((mod) => sendDiscordDM(mod.discordId, message)));
-}
-
 // Applies the Elo update, marks the match CONFIRMED, and records rating history.
 // Shared by self-confirmation (both players agree) and the cron finalizer's
 // auto-timeout path (only one player reported before the match expired).
@@ -310,14 +300,6 @@ export async function applyEloAndConfirm(
   if (historyRows.length > 0) {
     await tx.ratingHistory.createMany({ data: historyRows });
   }
-
-  // Self-boosting a practice rating has no real payoff (it never touches
-  // rank), so skip mods getting paged over it.
-  if (!matchRow.player1IsPracticing && !matchRow.player2IsPracticing) {
-    // Fire-and-forget — see the comment on flagPossibleSelfBoost for why this
-    // must never be awaited from inside this transaction.
-    flagPossibleSelfBoost({ id: match.id, createdAt: matchRow.createdAt }, p1, p2).catch(() => {});
-  }
 }
 
 // Only reachable while `match` is still each player's most recent CONFIRMED
@@ -326,7 +308,7 @@ export async function applyEloAndConfirm(
 // with the winner swapped, then overwrites in place. Never touches
 // gamesPlayed (this isn't a new game) and never revisits any other match,
 // so it can't disturb a later match that already built on this one's result.
-async function applyCorrection(
+export async function applyCorrection(
   tx: Prisma.TransactionClient,
   match: {
     id: string;
@@ -396,7 +378,7 @@ async function applyCorrection(
 // so a match from an already-ended season has nothing live left to reverse
 // against — reapplying Elo from its stored before-ratings would silently
 // corrupt whatever the new season already built up.
-async function isMostRecentConfirmedMatch(
+export async function isMostRecentConfirmedMatch(
   tx: Prisma.TransactionClient,
   match: { id: string; player1Id: string; player2Id: string; confirmedAt: Date | null; seasonId: string | null },
 ) {

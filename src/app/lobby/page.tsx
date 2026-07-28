@@ -13,6 +13,7 @@ import {
   characterPickState,
   getMatchGames,
   gameTurnState,
+  lastUsedCharacter,
   secondsUntil,
 } from "@/lib/match-games";
 import { listMatchComments, isOpponentTyping } from "@/lib/match-comments";
@@ -50,6 +51,7 @@ import {
   reportGame,
   reportOpponentCharacterAction,
   requestDisputeResolutionAction,
+  requestMutualCancelAction,
   requestRematchAction,
   sendMatchCommentAction,
   strikeStage,
@@ -541,7 +543,7 @@ async function PairedView({ userId, match }: { userId: string; match: Match }) {
         )}
 
         {match.status === "PENDING_REPORT" || match.status === "REPORTED" ? (
-          <MatchFooterActions match={match} />
+          <MatchFooterActions match={match} isPlayer1={isPlayer1} opponentName={opponent.username} />
         ) : (
           <CardContent className="border-t border-border pt-4">
             <p className="text-sm text-muted-foreground">
@@ -557,7 +559,15 @@ async function PairedView({ userId, match }: { userId: string; match: Match }) {
   );
 }
 
-function MatchFooterActions({ match }: { match: Match }) {
+function MatchFooterActions({
+  match,
+  isPlayer1,
+  opponentName,
+}: {
+  match: Match;
+  isPlayer1: boolean;
+  opponentName: string;
+}) {
   return (
     <CardContent className="flex flex-col gap-3 border-t border-border pt-4">
       <div className="flex items-center justify-between gap-2">
@@ -567,6 +577,17 @@ function MatchFooterActions({ match }: { match: Match }) {
         {(match.status === "PENDING_REPORT" || match.status === "REPORTED") && (
           <CancelMatchButton action={cancelMatchInProgress.bind(null, match.id)} />
         )}
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          Can&apos;t finish this set? Both sides can agree to call it off — no rating impact.
+        </p>
+        <MutualCancelSection
+          matchId={match.id}
+          myRequestedAt={isPlayer1 ? match.player1CancelRequestedAt : match.player2CancelRequestedAt}
+          opponentRequestedAt={isPlayer1 ? match.player2CancelRequestedAt : match.player1CancelRequestedAt}
+          opponentName={opponentName}
+        />
       </div>
       <ReportConductForm action={reportConductAction.bind(null, match.id)} />
       <div className="flex items-center justify-between gap-2">
@@ -641,6 +662,8 @@ function GameSection({
   const bannedCharacter = isPracticing
     ? (userId === match.player1Id ? match.player1.mainCharacter : match.player2.mainCharacter)
     : null;
+  const priorCharacter = lastUsedCharacter(games, userId);
+  const defaultCharacter = priorCharacter === bannedCharacter ? null : priorCharacter;
   const characterSection = (
     <CharacterPickSection
       userId={userId}
@@ -648,6 +671,7 @@ function GameSection({
       game={current}
       opponentName={opponentName}
       bannedCharacter={bannedCharacter}
+      defaultCharacter={defaultCharacter}
     />
   );
 
@@ -736,6 +760,7 @@ function CharacterPickSection({
   game,
   opponentName,
   bannedCharacter,
+  defaultCharacter,
 }: {
   userId: string;
   matchId: string;
@@ -748,6 +773,7 @@ function CharacterPickSection({
     createdAt: Date;
   };
   opponentName: string;
+  defaultCharacter: string | null;
   bannedCharacter: string | null;
 }) {
   const { yourCharacter, opponentCharacter, canPickNow } = characterPickState(game, userId);
@@ -813,13 +839,16 @@ function CharacterPickSection({
       </p>
       {bannedCharacter && (
         <p className="mt-2 text-xs text-muted-foreground">
-          Practicing this set — {bannedCharacter} is banned for you.
+          You queued this match as Practicing, so {bannedCharacter} (your reported main) is
+          banned for you this set — pick something else. This set only affects your separate
+          practice rating, not your ladder rating.
         </p>
       )}
       <form action={pickCharacter.bind(null, matchId, game.gameNumber)} className="mt-3 flex items-end gap-2">
         <CharacterSelect
+          key={game.gameNumber}
           name="character"
-          defaultValue=""
+          defaultValue={defaultCharacter ?? ""}
           placeholder="Select character"
           excludeCharacter={bannedCharacter}
         />
@@ -978,6 +1007,35 @@ function RematchSection({
       <form action={requestRematchAction.bind(null, matchId)}>
         <Button type="submit" variant="outline" size="sm">
           {opponentRequestedAt ? "Accept Rematch" : "Request Rematch"}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+function MutualCancelSection({
+  matchId,
+  myRequestedAt,
+  opponentRequestedAt,
+  opponentName,
+}: {
+  matchId: string;
+  myRequestedAt: Date | null;
+  opponentRequestedAt: Date | null;
+  opponentName: string;
+}) {
+  if (myRequestedAt) {
+    return <p className="text-xs text-muted-foreground">Waiting for {opponentName} to agree…</p>;
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      {opponentRequestedAt && (
+        <p className="text-xs text-muted-foreground">{opponentName} wants to cancel!</p>
+      )}
+      <form action={requestMutualCancelAction.bind(null, matchId)}>
+        <Button type="submit" variant="outline" size="sm">
+          {opponentRequestedAt ? "Agree to Cancel" : "Request Cancel"}
         </Button>
       </form>
     </div>

@@ -118,12 +118,12 @@ export default async function PlayerProfilePage({
               {player.noShowCount > 0 && (
                 <Badge variant="warning">{player.noShowCount} no-show{player.noShowCount === 1 ? "" : "s"}</Badge>
               )}
-              {player.cancelCount > 0 && (
+              {isModerator && player.cancelCount > 0 && (
                 <Badge variant="warning">
                   {player.cancelCount} cancel{player.cancelCount === 1 ? "" : "s"}
                 </Badge>
               )}
-              {player._count.connectionReportsReceived > 0 && (
+              {isModerator && player._count.connectionReportsReceived > 0 && (
                 <Badge variant="warning">
                   {player._count.connectionReportsReceived} connection report
                   {player._count.connectionReportsReceived === 1 ? "" : "s"}

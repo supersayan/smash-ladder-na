@@ -7,6 +7,7 @@ import {
   Gamepad2,
   Gauge,
   LogOut,
+  Search,
   Settings,
   Shield,
   Swords,
@@ -142,6 +143,16 @@ export async function SiteHeader() {
               >
                 <Gauge className="size-3.5" />
                 Admin
+              </Link>
+            )}
+            {(user?.role === "MOD" || user?.role === "ADMIN") && (
+              <Link
+                href="/admin/players"
+                prefetch={false}
+                className="flex items-center gap-1.5 hover:text-foreground"
+              >
+                <Search className="size-3.5" />
+                Players
               </Link>
             )}
             {(user?.role === "MOD" || user?.role === "ADMIN") && (

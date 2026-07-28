@@ -6,7 +6,7 @@ vi.mock("@/generated/prisma/enums", () => ({ ConfirmationMethod: {}, MatchStatus
 vi.mock("@/lib/matches", () => ({ applyEloAndConfirm: vi.fn() }));
 vi.mock("@/lib/discord-bot", () => ({ sendDiscordDM: vi.fn() }));
 
-import { characterPickState, gameTurnState, tallySetWins, GAMES_TO_WIN } from "./match-games";
+import { characterPickState, gameTurnState, lastUsedCharacter, tallySetWins, GAMES_TO_WIN } from "./match-games";
 
 describe("gameTurnState", () => {
   const base = {
@@ -158,5 +158,43 @@ describe("characterPickState", () => {
       "winner",
     );
     expect(state).toEqual({ yourCharacter: "Fox", opponentCharacter: "Falco", canPickNow: false });
+  });
+});
+
+describe("lastUsedCharacter", () => {
+  it("returns null for game 1 — no prior game to draw from", () => {
+    const games = [{ gameNumber: 1, actorAId: "p1", actorBId: "p2", actorACharacter: null, actorBCharacter: null }];
+    expect(lastUsedCharacter(games, "p1")).toBeNull();
+  });
+
+  it("picks up the character from the most recently finished game", () => {
+    const games = [
+      { gameNumber: 1, actorAId: "p1", actorBId: "p2", actorACharacter: "Fox", actorBCharacter: "Falco" },
+      { gameNumber: 2, actorAId: "p2", actorBId: "p1", actorACharacter: null, actorBCharacter: null },
+    ];
+    expect(lastUsedCharacter(games, "p1")).toBe("Fox");
+    expect(lastUsedCharacter(games, "p2")).toBe("Falco");
+  });
+
+  it("prefers the more recent game when the player counterpicked", () => {
+    const games = [
+      { gameNumber: 1, actorAId: "p1", actorBId: "p2", actorACharacter: "Fox", actorBCharacter: "Falco" },
+      { gameNumber: 2, actorAId: "p2", actorBId: "p1", actorACharacter: "Marth", actorBCharacter: "Wolf" },
+      { gameNumber: 3, actorAId: "p1", actorBId: "p2", actorACharacter: null, actorBCharacter: null },
+    ];
+    expect(lastUsedCharacter(games, "p1")).toBe("Wolf");
+  });
+
+  it("skips a game the player hasn't locked in yet and falls back further", () => {
+    const games = [
+      { gameNumber: 1, actorAId: "p1", actorBId: "p2", actorACharacter: "Fox", actorBCharacter: "Falco" },
+      { gameNumber: 2, actorAId: "p2", actorBId: "p1", actorACharacter: null, actorBCharacter: null },
+    ];
+    // p1 hasn't picked game 2 yet — falls back to game 1's pick.
+    expect(lastUsedCharacter(games, "p1")).toBe("Fox");
+  });
+
+  it("returns null if the player has no games at all", () => {
+    expect(lastUsedCharacter([], "p1")).toBeNull();
   });
 });

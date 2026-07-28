@@ -234,6 +234,8 @@ model RatingMatch {
   player2LeftAt                DateTime? // same, for player2
   player1RematchRequestedAt    DateTime? // set when player1 clicks "Request Rematch"; cleared if they later leave
   player2RematchRequestedAt    DateTime? // same, for player2
+  player1CancelRequestedAt     DateTime? // set when player1 asks to mutually cancel mid-set (see requestMutualCancel) — cleared once both sides have asked and the match cancels
+  player2CancelRequestedAt     DateTime? // same, for player2
   player1RatingBefore          Int?
   player1RatingAfter           Int?
   player2RatingBefore          Int?
@@ -252,6 +254,7 @@ model RatingMatch {
   correctionSecondReportedById String?
   correctionSecondReportedAt   DateTime?
   correctionDisputed           Boolean             @default(false)
+  adminGameEditCount           Int                 @default(0) // capped mod escape hatch — see adminSetGameWinner's post-CONFIRMED path in disputes.ts
   player1IsPracticing          Boolean             @default(false) // carried from player1's RatingLobbyEntry.isPracticing at pairing time — applyEloAndConfirm updates practiceRating instead of rating for this side when set
   player2IsPracticing          Boolean             @default(false) // same, for player2
   createdAt                    DateTime            @default(now())

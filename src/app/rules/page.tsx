@@ -112,9 +112,33 @@ export default function RulesPage() {
             logged against the canceling player&apos;s account.
           </p>
           <p>
-            Cancel only works before anything&apos;s happened in the set — once a game has a
-            decided winner, or either side has reported one, the match can no longer be canceled.
-            At that point, report the result or dispute it instead.
+            The one-sided cancel button only works before anything&apos;s happened in the set —
+            once a game has a decided winner, or either side has reported one, it stops working.
+            At that point, report the result or dispute it instead — unless you and your opponent
+            both want to call it off, in which case either of you can request a mutual cancel from
+            the match screen; once the other side agrees, it cancels immediately with no rating
+            impact for either player, no matter how far the set got.
+          </p>
+        </Section>
+
+        <Section title="Practicing">
+          <p>
+            Check &quot;Practicing&quot; when you join the queue to keep the set off your main
+            ladder rating entirely — wins and losses go to a separate practice rating instead, and
+            your regular rating and games-played don&apos;t move. Practice rating starts at the
+            same 1500 baseline and uses the same math, but it&apos;s a fully independent track.
+          </p>
+          <p>
+            While practicing, your reported main character (shown on your profile) is banned for
+            you for that set — the point is to actually practice something other than your go-to
+            pick, not to farm easy practice-mode wins with it. Only your own main is banned; your
+            opponent picks freely, whether or not they&apos;re also practicing.
+          </p>
+          <p>
+            Practicing is set per player, not per match — you can queue as practicing against
+            someone who isn&apos;t, and vice versa. If you&apos;d rather not face practicing
+            opponents at all, turn on &quot;Don&apos;t match me with opponents who are
+            practicing&quot; in Settings.
           </p>
         </Section>
 

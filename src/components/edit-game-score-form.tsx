@@ -63,6 +63,11 @@ export function EditGameScoreForm({
   player2Username,
   games,
   resetAction,
+  // Reset (wipe to 0-0) only makes sense for a set still in progress — a
+  // CONFIRMED match should go through the per-game "won" buttons instead,
+  // which reverse and reapply Elo automatically (capped, see editsRemaining).
+  showResetButton = true,
+  editsRemaining,
 }: {
   player1Username: string;
   player2Username: string;
@@ -76,6 +81,8 @@ export function EditGameScoreForm({
   // Must already be a bound Server Action — same reasoning as
   // ForceConfirmMatchForm's actionForPlayer1/2 props.
   resetAction: BoundAction;
+  showResetButton?: boolean;
+  editsRemaining?: number;
 }) {
   const [resetState, resetFormAction, resetPending] = useActionState(resetAction, { error: null });
 
@@ -83,6 +90,7 @@ export function EditGameScoreForm({
     <details className="mt-3 text-xs">
       <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
         Edit score
+        {editsRemaining !== undefined && ` (${editsRemaining} admin edit${editsRemaining === 1 ? "" : "s"} left)`}
       </summary>
       <div className="mt-2 flex flex-col gap-2">
         {games.map((g) => (
@@ -97,18 +105,20 @@ export function EditGameScoreForm({
             setPlayer2Action={g.setPlayer2Action}
           />
         ))}
-        <form
-          action={resetFormAction}
-          onSubmit={(e) => {
-            if (!confirm("Wipe this set's games entirely and restart from 0-0? This can't be undone.")) {
-              e.preventDefault();
-            }
-          }}
-        >
-          <Button type="submit" size="sm" variant="destructive" disabled={resetPending}>
-            Reset set to 0-0
-          </Button>
-        </form>
+        {showResetButton && (
+          <form
+            action={resetFormAction}
+            onSubmit={(e) => {
+              if (!confirm("Wipe this set's games entirely and restart from 0-0? This can't be undone.")) {
+                e.preventDefault();
+              }
+            }}
+          >
+            <Button type="submit" size="sm" variant="destructive" disabled={resetPending}>
+              Reset set to 0-0
+            </Button>
+          </form>
+        )}
         {resetState.error && <p className="text-destructive">{resetState.error}</p>}
       </div>
     </details>

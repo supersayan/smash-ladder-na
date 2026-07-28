@@ -230,7 +230,7 @@ export function gameTurnState(game: {
   return { phase: "picking", actorId: picker(game) };
 }
 
-type CharacterPickGame = {
+export type CharacterPickGame = {
   gameNumber: number;
   actorAId: string;
   actorBId: string;
@@ -269,6 +269,23 @@ export function characterPickState(
     opponentCharacter: theirCharacter,
     canPickNow: yourCharacter === null && (isActorA || actorALockedIn),
   };
+}
+
+// Most players stick with the same character for the whole set — pre-fills
+// the picker with whatever this player last locked in, most-recent game
+// first, so game 1 (no prior game) and a fresh counterpick both just fall
+// through to no default. Doesn't account for a practice-mode ban; the
+// caller clears the default back to null if it matches bannedCharacter,
+// since CharacterSelect's excludeCharacter already drops it from the
+// roster and a defaultValue outside the roster wouldn't submit correctly.
+export function lastUsedCharacter(games: CharacterPickGame[], userId: string): string | null {
+  const sorted = [...games].sort((a, b) => b.gameNumber - a.gameNumber);
+  for (const game of sorted) {
+    const character =
+      game.actorAId === userId ? game.actorACharacter : game.actorBId === userId ? game.actorBCharacter : null;
+    if (character) return character;
+  }
+  return null;
 }
 
 // A player queued with isPracticing bans their own self-declared

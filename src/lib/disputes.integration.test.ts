@@ -8,6 +8,7 @@ import {
   adminSetGameWinner,
   adminResetMatchToZero,
   adminCancelMatch,
+  MAX_ADMIN_GAME_EDITS,
 } from "@/lib/disputes";
 import { MatchStatus } from "@/generated/prisma/enums";
 import { createTestUser } from "@/test/factories";
@@ -282,6 +283,72 @@ describe("listLiveMatches", () => {
 
     const results = await listLiveMatches();
     expect(results).toEqual([]);
+  });
+
+  it("includes a recently-confirmed match that's still each player's most recent result", async () => {
+    const p1 = await createTestUser();
+    const p2 = await createTestUser();
+    const confirmed = await prisma.ratingMatch.create({
+      data: {
+        player1Id: p1.id,
+        player2Id: p2.id,
+        status: MatchStatus.CONFIRMED,
+        confirmedAt: new Date(),
+        expiresAt: new Date(),
+      },
+    });
+
+    const results = await listLiveMatches();
+    expect(results.map((m) => m.id)).toContain(confirmed.id);
+  });
+
+  // Regression test: this used to be a plain 24h time-window filter, which on
+  // a busy ladder pulled in every CONFIRMED match from the last day (hundreds
+  // to thousands) instead of just the ones actually still editable — see
+  // recentlyConfirmedEditableMatchIds in disputes.ts.
+  it("excludes a recently-confirmed match once a newer match for either player has confirmed", async () => {
+    const p1 = await createTestUser();
+    const p2 = await createTestUser();
+    const p3 = await createTestUser();
+    const superseded = await prisma.ratingMatch.create({
+      data: {
+        player1Id: p1.id,
+        player2Id: p2.id,
+        status: MatchStatus.CONFIRMED,
+        confirmedAt: new Date(Date.now() - 60 * 60 * 1000),
+        expiresAt: new Date(),
+      },
+    });
+    await prisma.ratingMatch.create({
+      data: {
+        player1Id: p1.id,
+        player2Id: p3.id,
+        status: MatchStatus.CONFIRMED,
+        confirmedAt: new Date(),
+        expiresAt: new Date(),
+      },
+    });
+
+    const results = await listLiveMatches();
+    expect(results.map((m) => m.id)).not.toContain(superseded.id);
+  });
+
+  it("excludes a recently-confirmed match once it's hit the admin edit cap", async () => {
+    const p1 = await createTestUser();
+    const p2 = await createTestUser();
+    const maxedOut = await prisma.ratingMatch.create({
+      data: {
+        player1Id: p1.id,
+        player2Id: p2.id,
+        status: MatchStatus.CONFIRMED,
+        confirmedAt: new Date(),
+        expiresAt: new Date(),
+        adminGameEditCount: MAX_ADMIN_GAME_EDITS,
+      },
+    });
+
+    const results = await listLiveMatches();
+    expect(results.map((m) => m.id)).not.toContain(maxedOut.id);
   });
 });
 
