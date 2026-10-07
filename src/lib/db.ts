@@ -2,15 +2,20 @@ import { existsSync } from "node:fs";
 import { config } from "dotenv";
 
 // Same lookup order as prisma.config.ts (and Next.js): the per-environment files
-// are read before the shared `.env` so the first one to define a key wins. In
-// the Next runtime this is already a no-op — the framework populated
-// process.env before this module ran — but scripts run directly through `tsx`
-// import this file first, and without the matching order they'd read the
-// production credentials in `.env` instead of the local database
-// `.env.development` points at. Pass DATABASE_URL inline to target a specific
-// database from a script.
-for (const file of [".env.development.local", ".env.local", ".env.development", ".env"]) {
-  if (existsSync(file)) config({ path: file });
+// are read before the shared `.env` so the first one to define a key wins.
+// Scripts run directly through `tsx` import this module before the framework has
+// populated process.env, so they need the files loaded here. Pass DATABASE_URL
+// inline to target a specific database from a script.
+//
+// This must never run in production. `.env.development` is checked in pointing
+// at the local Docker database, and loading it while deployed would inject those
+// `localhost` values into process.env — dotenv skips keys already present, but
+// `DATABASE_URL_POOLED` isn't set by Vercel, so the dev file's pooled URL would
+// win over the real DATABASE_URL below and every query would try 127.0.0.1.
+if (process.env.NODE_ENV !== "production") {
+  for (const file of [".env.development.local", ".env.local", ".env.development", ".env"]) {
+    if (existsSync(file)) config({ path: file });
+  }
 }
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
@@ -25,6 +30,14 @@ function createPrismaClient() {
   // would open one direct Postgres connection per serverless invocation and
   // exhaust Neon's connection limit under real concurrency.
   const connectionString = process.env.DATABASE_URL_POOLED ?? process.env.DATABASE_URL;
+  // Without a connection string, pg silently falls back to localhost:5432, which
+  // surfaces as an opaque P1001 "Can't reach database server at 127.0.0.1:5432"
+  // that reads like a code bug rather than a missing environment variable.
+  if (!connectionString) {
+    throw new Error(
+      "No database connection configured: set DATABASE_URL (and DATABASE_URL_POOLED for the pooled runtime connection) in this environment.",
+    );
+  }
   // pg.Pool defaults to 10 connections, which a burst of concurrent
   // interactive transactions (lobby pairing, match confirmation) can exhaust
   // within Prisma's default 2s maxWait — Neon's pooler comfortably handles a
