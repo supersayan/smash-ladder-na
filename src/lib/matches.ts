@@ -22,6 +22,7 @@ import { sendDiscordDM } from "@/lib/discord-bot";
 import { isNotificationEnabled } from "@/lib/notifications";
 import { computeTierChange, deferTierChange } from "@/lib/rank-roles";
 import { isEffectiveGoldSupporter } from "@/lib/supporters";
+import { deferMatchStreamCapture } from "@/lib/match-streams";
 
 // Free cancel is blocked for this long after a match is created, giving the
 // opponent a moment to actually show up before the other side can bail —
@@ -761,6 +762,16 @@ export async function applyEloAndConfirm(
   if (signOffs.length > 0) {
     await tx.matchComment.createMany({ data: signOffs });
   }
+
+  // Records which side(s) were live on Twitch as the set finished, so the
+  // profile's match history can offer the replay once Twitch publishes the
+  // VOD. Deferred past this transaction via after() (it's a network check) and
+  // best-effort there — a failure just means no replay link, never a failed
+  // confirm. p1/p2 are full User rows, so their Twitch fields are already here.
+  deferMatchStreamCapture(match.id, [
+    { id: p1.id, twitchUserId: p1.twitchUserId, twitchLogin: p1.twitchUsername },
+    { id: p2.id, twitchUserId: p2.twitchUserId, twitchLogin: p2.twitchUsername },
+  ]);
 }
 
 // Only reachable while `match` is still each player's most recent CONFIRMED
